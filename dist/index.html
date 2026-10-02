@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>iRTC - Seamless</title>
+    <script src="/socket.io.min.js"></script>
+    <style>
+        :root {
+            --ios-blue: #007aff; --ios-green: #34c759; --ios-red: #ff3b30;
+            --ios-bg: #f2f2f7; --ios-card: #ffffff; --ios-text: #000000;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root { --ios-bg: #1c1c1e; --ios-card: #2c2c2e; --ios-text: #ffffff; }
+        }
+
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; outline: none; }
+        body { font-family: -apple-system, sans-serif; background: var(--ios-bg); color: var(--ios-text); margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+        .header { padding: 50px 20px 10px; font-size: 34px; font-weight: 700; background: var(--ios-bg); z-index: 10; }
+        .content { flex: 1; overflow-y: auto; padding: 10px 16px 100px; }
+
+        .list-group { background: var(--ios-card); border-radius: 12px; overflow: hidden; margin-bottom: 20px; }
+        .list-item { display: flex; align-items: center; padding: 14px 16px; gap: 15px; border-bottom: 0.5px solid rgba(0,0,0,0.1); cursor:pointer; }
+        .avatar { width: 44px; height: 44px; border-radius: 22px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+        .info { flex: 1; }
+        .info .name { font-size: 17px; font-weight: 500; }
+        .info .status { font-size: 13px; color: #8e8e93; }
+        .info .status.busy { color: var(--ios-red); }
+
+        .call-icon { color: var(--ios-green); font-weight: 600; font-size: 14px; }
+
+        /* 底部导航 */
+        .tab-bar { position: fixed; bottom: 0; left: 0; right: 0; height: 84px; background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(20px); display: flex; justify-content: space-around; padding-top: 10px; padding-bottom: env(safe-area-inset-bottom); border-top: 0.5px solid rgba(0,0,0,0.1); }
+        @media (prefers-color-scheme: dark) { .tab-bar { background: rgba(30, 30, 32, 0.85); } }
+        .tab-item { display: flex; flex-direction: column; align-items: center; gap: 4px; color: #8e8e93; font-size: 10px; border: none; background:none; cursor:pointer;}
+        .tab-item.active { color: var(--ios-blue); }
+        .tab-item svg { width: 26px; height: 26px; }
+
+        /* 呼叫全屏覆盖 */
+        .call-overlay { position: fixed; inset: 0; background: #000; z-index: 200; display: none; flex-direction: column; transform: translateY(100%); transition: transform 0.4s cubic-bezier(0.1, 0.7, 0.1, 1); }
+        .call-overlay.active { display: flex; transform: translateY(0); }
+        .remote-video-wrap { width: 100%; height: 100%; background: #111; }
+        .remote-video-wrap video { width: 100%; height: 100%; object-fit: contain; }
+        .local-video-wrap { position: absolute; top: 60px; right: 20px; width: 100px; height: 150px; border-radius: 12px; overflow: hidden; background: #333; z-index: 210; box-shadow: 0 10px 40px rgba(0,0,0,0.5); }
+        .local-video-wrap video { width: 100%; height: 100%; object-fit: contain; }
+        .call-info { position: absolute; top: 60px; left: 20px; z-index: 210; text-shadow: 0 2px 10px rgba(0,0,0,0.5); }
+        .call-footer { position: absolute; bottom: 5vh; left: 50%; transform: translateX(-50%); z-index: 210; }
+        .hangup-btn { width: 72px; height: 72px; border-radius: 36px; background: var(--ios-red); border: none; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 30px rgba(255, 59, 48, 0.4); cursor:pointer;}
+
+        /* 自定义接听确认弹窗 (Non-blocking) */
+        .incoming-call {
+            position: fixed; top: 50px; left: 16px; right: 16px; 
+            background: rgba(44, 44, 46, 0.95); backdrop-filter: blur(20px);
+            border-radius: 20px; padding: 20px; z-index: 300;
+            display: none; align-items: center; justify-content: space-between;
+            color: white; box-shadow: 0 20px 50px rgba(0,0,0,0.4);
+            transform: translateY(-150%); transition: transform 0.4s ease;
+        }
+        .incoming-call.active { display: flex; transform: translateY(0); }
+        .incoming-info .caller-name { font-size: 18px; font-weight: 600; margin-bottom: 2px; }
+        .incoming-info .caller-status { font-size: 13px; opacity: 0.6; }
+        .incoming-actions { display: flex; gap: 12px; }
+        .action-btn { width: 44px; height: 44px; border-radius: 22px; border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+        .btn-decline { background: var(--ios-red); }
+        .btn-accept { background: var(--ios-green); }
+
+        /* 提示层样式补全 */
+        .ios-alert { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%) scale(0.9); width: 270px; background: rgba(255,255,255,0.95); border-radius: 14px; z-index: 400; display: none; text-align: center; box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
+        @media (prefers-color-scheme: dark) { .ios-alert { background: rgba(50,50,50,0.9); color: white; } }
+        .ios-alert.visible { display: block; transform: translate(-50%,-50%) scale(1); animation: pop 0.2s; }
+        @keyframes pop { from { transform: translate(-50%,-50%) scale(0.8); opacity: 0; } to { transform: translate(-50%,-50%) scale(1); opacity: 1; } }
+
+        /* 会议室列表样式 */
+        .room-item { padding: 16px; border-bottom: 0.5px solid rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; }
+        .room-info-box { display: flex; flex-direction: column; gap: 2px; }
+        .room-name { font-size: 17px; font-weight: 600; }
+        .room-count { font-size: 13px; color: #8e8e93; }
+        .join-btn { background: var(--ios-blue); color: white; border: none; padding: 6px 16px; border-radius: 15px; font-size: 14px; font-weight: 600; }
+
+        /* 会议全屏覆盖 (Mesh) */
+        .meeting-overlay { position: fixed; inset: 0; background: #000; z-index: 250; display: none; flex-direction: column; transform: translateY(100%); transition: transform 0.4s cubic-bezier(0.1, 0.7, 0.1, 1); }
+        .meeting-overlay.active { display: flex; transform: translateY(0); }
+        /* 会议布局优化: 左主右侧 */
+        .meeting-container { 
+            flex: 1; 
+            display: flex; 
+            overflow: hidden; 
+            padding: 10px 20px; 
+            gap: 16px;
+        }
+        
+        .meeting-main { 
+            flex: 3; 
+            background: #1c1c1e; 
+            border-radius: 20px; 
+            overflow: hidden; 
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+        
+        .meeting-sidebar { 
+            flex: 1; 
+            display: flex; 
+            flex-direction: column; 
+            gap: 12px; 
+            overflow-y: auto; 
+            padding-right: 8px;
+            min-width: 240px;
+        }
+
+        /* 隐藏滚动条但保留功能 */
+        .meeting-sidebar::-webkit-scrollbar { width: 6px; }
+        .meeting-sidebar::-webkit-scrollbar-track { background: transparent; }
+        .meeting-sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 3px; }
+
+        .video-card { 
+            position: relative; 
+            background: #2c2c2e; 
+            border-radius: 16px; 
+            overflow: hidden; 
+            aspect-ratio: 16 / 9;
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.05);
+            flex-shrink: 0;
+        }
+
+        .meeting-main .video-card {
+            width: 100%; height: 100%; border: none; border-radius: 0;
+        }
+
+        .video-card video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+        .video-card .no-video-placeholder { position: absolute; inset: 0; background: #1c1c1e; display: flex; align-items: center; justify-content: center; z-index: 1; }
+        .video-card .no-video-placeholder svg { width: 40%; height: 40%; opacity: 0.15; }
+        .video-card .name-tag { position: absolute; bottom: 8px; left: 8px; background: rgba(0,0,0,0.6); backdrop-filter: blur(12px); color: white; padding: 4px 10px; border-radius: 8px; font-size: 11px; font-weight: 500; z-index: 5; }
+        
+        .meeting-header { padding: 50px 24px 10px; color: white; display: flex; justify-content: space-between; align-items: flex-start; z-index: 260; }
+        .meeting-footer { padding: 15px 20px 40px; display: flex; justify-content: center; gap: 24px; z-index: 260; }
+        .tool-btn { width: 56px; height: 56px; border-radius: 28px; background: rgba(255,255,255,0.3); backdrop-filter: blur(24px); border: 1px solid rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .tool-btn.active { background: white; color: black; border-color: white; }
+        .tool-btn.active svg { fill: black; }
+        .tool-btn.off { background: rgba(255, 59, 48, 0.15); color: #ff3b30; border-color: rgba(255, 59, 48, 0.3); }
+        .tool-btn.off svg { fill: #ff3b30; }
+        .tool-btn.red { background: #ff3b30; color: white; border-color: #ff3b30; }
+        .tool-btn.red svg { fill: white; }
+        .tool-btn:active { transform: scale(0.92); opacity: 0.9; }
+        .tool-btn.disabled { pointer-events: none; cursor: not-allowed; filter: grayscale(1); }
+
+        @media (max-width: 768px) {
+            .meeting-container { flex-direction: column; }
+            .meeting-main { flex: 2; min-height: 300px; }
+            .meeting-sidebar { flex: 1; min-width: auto; flex-direction: row; overflow-x: auto; overflow-y: hidden; padding-bottom: 8px; }
+            .meeting-sidebar .video-card { width: 160px; aspect-ratio: 16 / 9; }
+        }
+    </style>
+</head>
+<body>
+    <div id="header" class="header">联系人</div>
+
+    <div class="content">
+        <div id="tab-contacts" class="tab-page" style="display: block;">
+            <div id="user-list" class="list-group"></div>
+        </div>
+
+        <div id="tab-meeting" class="tab-page" style="display: none;">
+            <div class="list-group" style="padding: 16px;">
+                <div style="font-size: 12px; color: var(--ios-blue); font-weight: 600; margin-bottom: 8px;">创建新会议</div>
+                <div style="display: flex; gap: 10px;">
+                    <input type="text" id="room-name-input" placeholder="输入会议名称" style="flex:1; border:none; background:rgba(0,0,0,0.05); padding: 12px 16px; border-radius:10px; font-size: 16px; color: var(--ios-text);">
+                    <button id="create-room-btn" style="background: var(--ios-blue); color:white; border:none; border-radius:10px; padding: 0 20px; font-weight:600;">启动</button>
+                </div>
+            </div>
+            <div style="padding-left: 16px; margin-bottom: 8px; font-size: 13px; color: #8e8e93;">进行中的会议</div>
+            <div id="room-list" class="list-group">
+                <div style="padding: 20px; text-align: center; color: #8e8e93;">暂无会议</div>
+            </div>
+        </div>
+
+        <div id="tab-me" class="tab-page" style="display: none;">
+            <div class="list-group" style="padding: 30px; text-align: center;">
+                <div id="my-avatar" class="avatar" style="width: 80px; height: 80px; margin: 0 auto 10px; font-size: 36px;"></div>
+                <div id="my-id" style="font-size: 12px; opacity: 0.4;">ID: --</div>
+            </div>
+            <div class="list-group">
+                <div style="padding: 12px 16px; border-bottom: 0.5px solid rgba(0,0,0,0.1); font-size: 12px; color: var(--ios-blue); font-weight: 600;">我的昵称</div>
+                <input type="text" id="nick-input" style="width:100%; border:none; background:transparent; padding: 12px 16px; font-size: 17px; color: var(--ios-text);">
+            </div>
+            <button id="save-btn" style="width:calc(100% - 32px); margin: 0 16px; padding: 16px; background: var(--ios-blue); color:white; border:none; border-radius:14px; font-weight:600; font-size: 17px;">保存修改</button>
+        </div>
+    </div>
+
+    <!-- 来电通知 (非阻塞) -->
+    <div id="incoming-modal" class="incoming-call">
+        <div class="incoming-info">
+            <div id="caller-name-label" class="caller-name">某人</div>
+            <div class="caller-status">正在呼叫...</div>
+        </div>
+        <div class="incoming-actions">
+            <button class="action-btn btn-decline" onclick="handleDecline()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M6.62 10.79c1.44 2.82 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></svg>
+            </button>
+            <button class="action-btn btn-accept" onclick="handleAccept()">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="white"><path d="M20 15.5c-1.25 0-2.45-.2-3.57-.57-.35-.11-.74-.03-1.02.24l-2.2 2.2c-2.83-1.44-5.15-3.76-6.59-6.59l2.2-2.2c.28-.28.36-.67.25-1.02C8.7 6.45 8.5 5.25 8.5 4c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1 0 9.39 7.61 17 17 17 .55 0 1-.45 1-1v-3.5c0-.55-.45-1-1-1z"/></svg>
+            </button>
+        </div>
+    </div>
+
+    <!-- 呼叫层 -->
+    <div id="call-overlay" class="call-overlay">
+        <div class="call-info">
+            <div id="remote-name-call" style="font-size: 28px; font-weight: 600; color: #fff;">名字</div>
+            <div id="call-status-label" style="font-size: 14px; color: #ccc;">正在拨号...</div>
+        </div>
+        <div class="remote-video-wrap">
+            <video id="remote-video" autoplay playsinline></video>
+        </div>
+        <div class="local-video-wrap">
+            <video id="local-video" autoplay playsinline muted></video>
+        </div>
+        <div class="call-footer" style="display: flex; gap: 20px; align-items: center; width: 100%; justify-content: center; position: absolute; bottom: 50px;">
+            <button class="tool-btn active mic-btn-ui" onclick="toggleMic()" style="width: 60px; height: 60px; background: rgba(255,255,255,0.25); color: white; border: none;">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M9.875 13.125Q9 12.25 9 11V5q0-1.25.875-2.125T12 2t2.125.875T15 5v6q0 1.25-.875 2.125T12 14t-2.125-.875M11 21v-3.075q-2.6-.35-4.3-2.325T5 11h2q0 2.075 1.463 3.538T12 16t3.538-1.463T17 11h2q0 2.625-1.7 4.6T13 17.925V21z"/></svg>
+            </button>
+            <button id="hangup-btn" class="hangup-btn" onclick="sdk.hangup()">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="white"><path d="M6.62 10.79c1.44 2.82 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></svg>
+            </button>
+            <button class="tool-btn active video-btn-ui" onclick="toggleVideo()" style="width: 60px; height: 60px; background: rgba(255,255,255,0.25); color: white; border: none;">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M4 20q-.825 0-1.412-.587T2 18V6q0-.825.588-1.412T4 4h12q.825 0 1.413.588T18 6v4.5l4-4v11l-4-4V18q0 .825-.587 1.413T16 20z"/></svg>
+            </button>
+        </div>
+    </div>
+
+    <div id="ios-alert" class="ios-alert">
+        <div style="padding: 20px;">
+            <div id="alert-title" style="font-weight: 600; margin-bottom: 4px;">提醒</div>
+            <div id="alert-msg" style="font-size: 13px; opacity: 0.7;">信息内容</div>
+        </div>
+        <button style="width:100%; background:none; border:none; border-top: 0.5px solid rgba(0,0,0,0.1); padding: 12px; color: var(--ios-blue); font-weight: 600; font-size: 17px;" onclick="closeAlert()">好</button>
+    </div>
+
+    <nav class="tab-bar">
+        <button id="tab-btn-contacts" class="tab-item active" onclick="switchTab('contacts')">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M5 18.85q1.35-1.325 3.138-2.087T12 16t3.863.763T19 18.85V6H5zm4.525-5.875Q8.5 11.95 8.5 10.5t1.025-2.475T12 7t2.475 1.025T15.5 10.5t-1.025 2.475T12 14t-2.475-1.025M5 22q-.825 0-1.412-.587T3 20V6q0-.825.588-1.412T5 4h1V2h2v2h1q.825 0 1.413.588T21 6v14q0 .825-.587 1.413T19 22z"/></svg>
+            <span>联系人</span>
+        </button>
+        <button id="tab-btn-meeting" class="tab-item" onclick="switchTab('meeting')">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M8.1 21.213q-1.825-.788-3.175-2.138T2.788 15.9T2 12t.788-3.9t2.137-3.175T8.1 2.788T12 2t3.9.788t3.175 2.137T21.213 8.1T22 12t-.788 3.9t-2.137 3.175t-3.175 2.138T12 22t-3.9-.788m3.875-8.737Q13 11.45 13 10t-1.025-2.475T9.5 6.5T7.025 7.525T6 10t1.025 2.475T9.5 13.5t2.475-1.025m6.3 1.3Q19 13.05 19 12t-.725-1.775T16.5 9.5t-1.775.725T14 12t.725 1.775t1.775.725t1.775-.725M12 20q2.125 0 3.875-1t2.825-2.65q-.525-.15-1.075-.25T16.5 16q-1.325 0-3.2.775t-3 3.05q.425.1.85.138T12 20m-3.175-.65q.875-1.8 1.988-2.675T12.5 15.5q-.725-.225-1.463-.362T9.5 15q-1.125 0-2.225.275t-2.125.775q.65 1.075 1.588 1.938t2.087 1.362"/></svg>
+            <span>会议</span>
+        </button>
+        <button id="tab-btn-me" class="tab-item" onclick="switchTab('me')">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M14.125 14.125Q15 13.25 15 12t-.875-2.125T12 9t-2.125.875T9 12t.875 2.125T12 15t2.125-.875M12 16q-1.45 0-2.812.413T6.6 17.6q-.3.175-.45.475t-.15.65V19h12v-.275q0-.35-.15-.65t-.45-.475q-1.225-.775-2.587-1.187T12 16m-6 5q-.825 0-1.412-.587T4 19v-9q0-.475.213-.9t.587-.7l6-4.5q.525-.4 1.2-.4t1.2.4l6 4.5q.375.275.588.7T20 10v9q0 .825-.588 1.413T18 21z"/></svg>
+            <span>我</span>
+        </button>
+
+    </nav>
+    <audio id="ring-audio" src="ring.mp3" preload="auto"></audio>
+
+    <!-- 会议层 (Mesh) -->
+    <div id="meeting-overlay" class="meeting-overlay">
+        <div class="meeting-header">
+            <div>
+                <div id="meeting-room-name" style="font-size: 24px; font-weight: 700;">会议中</div>
+                <div id="meeting-id-label" style="font-size: 12px; opacity: 0.6;">Room ID: --</div>
+            </div>
+            <div id="meeting-timer" style="font-variant-numeric: tabular-nums;">00:00</div>
+        </div>
+        <div class="meeting-container">
+            <div id="meeting-main" class="meeting-main"></div>
+            <div id="meeting-sidebar" class="meeting-sidebar"></div>
+        </div>
+        <div class="meeting-footer">
+            <button class="tool-btn active mic-btn-ui" onclick="toggleMic()">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M9.875 13.125Q9 12.25 9 11V5q0-1.25.875-2.125T12 2t2.125.875T15 5v6q0 1.25-.875 2.125T12 14t-2.125-.875M11 21v-3.075q-2.6-.35-4.3-2.325T5 11h2q0 2.075 1.463 3.538T12 16t3.538-1.463T17 11h2q0 2.625-1.7 4.6T13 17.925V21z"/></svg>
+            </button>
+            <button class="tool-btn red" onclick="leaveRoom()">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.74-1.69-1.36-2.67-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
+            </button>
+            <button class="tool-btn active video-btn-ui" onclick="toggleVideo()">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M4 20q-.825 0-1.412-.587T2 18V6q0-.825.588-1.412T4 4h12q.825 0 1.413.588T18 6v4.5l4-4v11l-4-4V18q0 .825-.587 1.413T16 20z"/></svg>
+            </button>
+        </div>
+    </div>
+
+    <script src="/sdk.js"></script>
+    <script>
+        const ICONS = {
+            micOn: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M9.875 13.125Q9 12.25 9 11V5q0-1.25.875-2.125T12 2t2.125.875T15 5v6q0 1.25-.875 2.125T12 14t-2.125-.875M11 21v-3.075q-2.6-.35-4.3-2.325T5 11h2q0 2.075 1.463 3.538T12 16t3.538-1.463T17 11h2q0 2.625-1.7 4.6T13 17.925V21z"/></svg>`,
+            micOff: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M17.75 14.95L16.3 13.5q.35-.575.525-1.2T17 11h2q0 1.1-.325 2.088t-.925 1.862m-2.95-3L9 6.15V5q0-1.25.875-2.125T12 2t2.125.875T15 5v6q0 .275-.062.5t-.138.45M11 21v-3.1q-2.6-.35-4.3-2.312T5 11h2q0 2.075 1.463 3.538T12 16q.85 0 1.613-.262T15 15l1.425 1.425q-.725.575-1.588.963T13 17.9V21zm8.8 1.6L1.4 4.2l1.4-1.4l18.4 18.4z"/></svg>`,
+            micDisabled: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M7.875 13.125Q7 12.25 7 11V5q0-1.25.875-2.125T10 2t2.125.875T13 5v6q0 1.25-.875 2.125T10 14t-2.125-.875M11 21H9v-3.075q-2.6-.35-4.3-2.325T3 11h2q0 2.075 1.463 3.538T10 16q.275 0 .513-.025T11 15.9zm6-1q.2 0 .35-.15t.15-.35t-.15-.35T17 19t-.35.15t-.15.35t.15.35t.35.15m-.5-2h1v-4h-1zm-3.037 2.538Q12 19.075 12 17t1.463-3.537T17 12t3.538 1.463T22 17t-1.463 3.538T17 22t-3.537-1.463"/></svg>`,
+            videoOn: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M4 20q-.825 0-1.412-.587T2 18V6q0-.825.588-1.412T4 4h12q.825 0 1.413.588T18 6v4.5l4-4v11l-4-4V18q0 .825-.587 1.413T16 20z"/></svg>`,
+            videoOff: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="m22 17.5l-4-4v1.675L6.825 4H16q.825 0 1.413.588T18 6v4.5l4-4zm-1.45 5.85L.65 3.45l1.4-1.4l19.9 19.9zM4 4l14 14q0 .825-.587 1.413T16 20H4q-.825 0-1.412-.587T2 18V6q0-.825.588-1.412T4 4"/></svg>`,
+            videoDisabled: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M11.675 20q.625-.875.95-1.9t.325-2.125q0-2.9-2.037-4.937T5.975 9Q4.9 9 3.888 9.313T2 10.225V6q0-.825.588-1.412T4 4h12q.825 0 1.413.588T18 6v4.5l4-4v11l-4-4V18q0 .825-.587 1.413T16 20zm-9.212-.462Q1 18.075 1 16t1.463-3.537T6 11t3.538 1.463T11 16t-1.463 3.538T6 21t-3.537-1.462M5.5 17h1v-4h-1zm.5 2q.2 0 .35-.15t.15-.35t-.15-.35T6 18t-.35.15t-.15.35t.15.35T6 19"/></svg>`
+        };
+        const personSvg = `<svg t="1776665553553" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="20221" width="200" height="200"><path d="M513.457231 41.353846c-133.377969 2.837662-244.999877 49.189415-332.973292 137.160862C92.512492 266.488123 46.160738 378.110031 43.323077 511.488c2.837662 133.377969 49.189415 244.054646 137.160862 332.026092C268.457354 931.487508 380.079262 977.839262 513.457231 980.676923c133.377969-2.837662 244.054646-49.189415 332.026092-137.160862S979.808492 644.867938 982.646154 511.488c-2.837662-133.377969-49.189415-244.054646-137.160862-332.026092C757.511877 90.543262 646.837169 44.191508 513.457231 41.353846L513.457231 41.353846zM811.431385 799.056738c-23.650462-11.352615-49.189415-23.648492-74.730338-26.486154-67.160615-5.675323-108.782277-16.080738-124.863015-32.161477-15.137477-16.082708-21.758031-38.784-18.9184-68.109785 0.945231-17.9712 5.675323-28.376615 16.080738-33.108677 10.405415-4.728123 21.756062-31.216246 33.108677-78.513231 3.784862-14.188308 7.567754-25.540923 12.297846-34.053908 4.728123-8.512985 12.295877-26.486154 21.756062-55.809969 4.730092-20.810831 4.730092-33.108677-0.945231-35.944369-5.675323-2.837662-9.460185-3.784862-10.403446-2.837662L669.538462 411.218708c2.837662-13.243077 4.728123-29.323815 6.620554-47.296985 5.677292-47.296985-3.782892-87.973415-28.378585-122.027323-24.593723-34.999138-69.998277-52.972308-137.160862-54.864738-59.594831 0.945231-90.811077 24.595692-125.810215 53.919508-38.784 30.271015-52.027077 70.945477-41.621662 122.972554 7.567754 38.784 18.9184 70.945477 11.350646 68.107815-0.945231-0.945231-4.728123 0-9.458215 2.837662-4.730092 2.837662-5.675323 15.135508-1.892431 35.944369 10.405415 25.540923 17.973169 43.514092 23.648492 52.974277 5.675323 9.458215 9.458215 21.756062 12.297846 36.8896 9.460185 46.351754 18.9184 71.892677 29.323815 76.6208 10.405415 4.730092 17.025969 17.027938 20.810831 34.999138 4.730092 29.325785-0.945231 52.027077-17.973169 68.109785-17.025969 16.080738-57.7024 26.486154-122.027323 32.161477-23.648492 2.837662-52.027077 14.188308-74.728369 25.540923-72.837908-75.675569-115.4048-175.946831-116.352-286.621538 2.837662-117.297231 43.514092-214.728862 122.027323-293.244062s175.946831-119.187692 293.244062-122.027323c117.295262 2.837662 214.728862 43.514092 292.296862 122.027323 78.513231 78.513231 119.189662 175.946831 122.027323 293.244062C926.834215 624.055138 884.267323 724.324431 811.431385 799.056738z" p-id="20222" fill="#bfbfbf"></path></svg>`;
+        
+        const sdk = new WebrtcSDK(location.origin);
+        
+        let ringTimer;
+        let meetingTimerInterval;
+        let meetingStartTime;
+
+        window.onload = () => {
+            const myName = localStorage.getItem('webrtc_username') || `User_${Math.floor(Math.random()*1000)}`;
+            document.getElementById('nick-input').value = myName;
+            updateMe();
+            sdk.register(myName);
+
+            const unlockAudio = () => {
+                const dummyAudio = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
+                dummyAudio.play().catch(e => {});
+                document.removeEventListener('click', unlockAudio);
+                document.removeEventListener('touchstart', unlockAudio);
+            };
+            document.addEventListener('click', unlockAudio);
+            document.addEventListener('touchstart', unlockAudio);
+        };
+
+        function updateMe() {
+            document.getElementById('my-avatar').innerHTML = personSvg;
+            document.getElementById('my-id').textContent = `ID: ${sdk.socket.id ? sdk.socket.id.slice(0,8) : '--'}`;
+        }
+
+        document.getElementById('save-btn').onclick = () => {
+            const myName = document.getElementById('nick-input').value.trim();
+            if (!myName) return;
+            localStorage.setItem('webrtc_username', myName);
+            sdk.register(myName);
+            updateMe();
+            showAlert('成功', '个人资料已更新');
+        };
+
+        // --- SDK Event Bindings ---
+
+        sdk.on('onUserList', (users) => {
+            const list = document.getElementById('user-list');
+            list.innerHTML = '';
+            users.forEach(u => {
+                if (u.id === sdk.socket.id) return;
+                const div = document.createElement('div');
+                div.className = 'list-item';
+                div.innerHTML = `
+                    <div class="avatar">${personSvg}</div>
+                    <div class="info">
+                        <div class="name"></div>
+                    </div>
+                    <div class="call-action" style="font-weight: 600; font-size: 14px; color: ${u.isBusy ? 'var(--ios-red)' : 'var(--ios-green)'}">
+                        ${u.isBusy ? '正忙' : '呼叫'}
+                    </div>
+                `;
+                div.querySelector('.name').textContent = u.name;
+                if (!u.isBusy) div.onclick = () => {
+                    showCall(u.name);
+                    sdk.callUser(u.id, u.name);
+                };
+                list.appendChild(div);
+            });
+        });
+
+        sdk.on('onRoomList', (rooms) => {
+            const list = document.getElementById('room-list');
+            list.innerHTML = '';
+            if (rooms.length === 0) {
+                list.innerHTML = '<div style="padding: 20px; text-align: center; color: #8e8e93;">暂无会议</div>';
+                return;
+            }
+            rooms.forEach(r => {
+                const div = document.createElement('div');
+                div.className = 'room-item';
+                div.innerHTML = `
+                    <div class="room-info-box">
+                        <div class="room-name"></div>
+                        <div class="room-count"></div>
+                    </div>
+                    <button class="join-btn">加入</button>
+                `;
+                div.querySelector('.room-name').textContent = `${r.name} (${r.id.slice(-4)})`;
+                div.querySelector('.room-count').textContent = `成员数: ${r.memberCount}`;
+                div.querySelector('.join-btn').onclick = () => {
+                    setupMeetingUI(r.name, r.id);
+                    sdk.joinRoom(r.id);
+                };
+                list.appendChild(div);
+            });
+        });
+
+        sdk.on('onLocalStream', (stream, hasVideo, hasAudio) => {
+            if (!stream) {
+                showAlert('媒体错误', '无法访问您的摄像头或麦克风，请检查权限或硬件连接。');
+            }
+            
+            const videoBtns = document.querySelectorAll('.video-btn-ui');
+            const micBtns = document.querySelectorAll('.mic-btn-ui');
+            
+            videoBtns.forEach(btn => {
+                btn.classList.remove('active', 'off', 'disabled');
+                if (!stream || !hasVideo) {
+                    btn.classList.add('disabled');
+                    btn.innerHTML = ICONS.videoDisabled;
+                } else {
+                    const track = stream.getVideoTracks()[0];
+                    const enabled = track ? track.enabled : false;
+                    btn.classList.add(enabled ? 'active' : 'off');
+                    btn.innerHTML = enabled ? ICONS.videoOn : ICONS.videoOff;
+                }
+            });
+
+            micBtns.forEach(btn => {
+                btn.classList.remove('active', 'off', 'disabled');
+                if (!stream || !hasAudio) {
+                    btn.classList.add('disabled');
+                    btn.innerHTML = ICONS.micDisabled;
+                } else {
+                    const track = stream.getAudioTracks()[0];
+                    const enabled = track ? track.enabled : false;
+                    btn.classList.add(enabled ? 'active' : 'off');
+                    btn.innerHTML = enabled ? ICONS.micOn : ICONS.micOff;
+                }
+            });
+
+            const localVid = document.getElementById('local-video');
+            if(localVid) localVid.srcObject = stream;
+            
+            // 确保本地流在会议布局中被渲染
+            if (sdk.state.currentRoom) {
+                addVideoToGrid('local', stream, '我 (本地)');
+            }
+        });
+
+        sdk.on('onIncomingCall', (from, fromName) => {
+            playRingWithInterval();
+            const modal = document.getElementById('incoming-modal');
+            document.getElementById('caller-name-label').textContent = fromName;
+            modal.style.display = 'flex';
+            setTimeout(() => modal.classList.add('active'), 10);
+        });
+
+        sdk.on('onCallAnswered', () => {
+            document.getElementById('call-status-label').textContent = '正在通话...';
+        });
+
+        sdk.on('onCallEnded', () => {
+            document.getElementById('remote-video').srcObject = null;
+            document.getElementById('call-overlay').classList.remove('active');
+            setTimeout(() => document.getElementById('call-overlay').style.display = 'none', 500);
+            closeIncoming();
+        });
+
+        sdk.on('onBusySignal', (name) => {
+            showAlert('无法拨通', `${name} 正在忙碌`);
+        });
+
+        sdk.on('onRoomInfo', (info) => {
+            document.getElementById('meeting-room-name').textContent = info.name;
+            document.getElementById('meeting-id-label').textContent = `Room ID: ${info.id}`;
+            if (info.roomAge !== undefined) {
+                // 利用服务器传回的相对逝去时间，倒推出免疫时钟误差的本地校准时间
+                meetingStartTime = Date.now() - info.roomAge;
+                if (meetingTimerInterval) clearInterval(meetingTimerInterval);
+                meetingTimerInterval = setInterval(updateTimer, 1000);
+                updateTimer();
+            }
+        });
+
+        sdk.on('onTrackAdded', (peerId, stream, name) => {
+            addVideoToGrid(peerId, stream, name);
+        });
+
+        function addVideoToGrid(peerId, stream, name) {
+            const main = document.getElementById('meeting-main');
+            const sidebar = document.getElementById('meeting-sidebar');
+            
+            let cardId = peerId === 'remote' ? 'remote-video' : `video-card-${peerId}`;
+            
+            if (peerId === 'remote') {
+                const vid = document.getElementById('remote-video');
+                if(vid) {
+                    if (vid.srcObject !== stream) {
+                        console.log(`[媒体诊断] 正在为 [${name || '未知'}] 绑定远程流`);
+                        vid.srcObject = stream;
+                    }
+                    // 强制解除锁定：无论流对象是否变化，只要轨道更新了都重刷状态
+                    vid.muted = false;
+                    vid.volume = 1.0;
+                    vid.play().catch(e => console.error(`[媒体诊断] [${name || '未知'}] 1v1自动播放失败:`, e.name, e.message));
+                }
+                return;
+            }
+
+            let card = document.getElementById(cardId);
+            if (!card) {
+                card = document.createElement('div');
+                card.id = cardId;
+                card.className = 'video-card';
+                card.innerHTML = `
+                    <div class="no-video-placeholder">${personSvg}</div>
+                    <video autoplay playsinline ${peerId === 'local' ? 'muted' : ''}></video>
+                    <div class="name-tag"></div>
+                `;
+                if (peerId === 'local') main.appendChild(card);
+                else sidebar.appendChild(card);
+            }
+            
+            if (name) card.querySelector('.name-tag').textContent = name;
+            
+            const video = card.querySelector('video');
+            const placeholder = card.querySelector('.no-video-placeholder');
+
+            if (stream) {
+                if (video.srcObject !== stream) {
+                    const audioTracks = stream.getAudioTracks().length;
+                    const videoTracks = stream.getVideoTracks().length;
+                    console.log(`[媒体诊断] [${name || '未知'}] 流详情: 音频轨=${audioTracks}, 视频轨=${videoTracks}`);
+                    
+                    console.log(`[媒体诊断] 正在为 [${name || '未知'}] 绑定会议流`);
+                    video.srcObject = stream;
+                    // 强制设为非静音并设置音量，防止部分浏览器对动态插入的元素默认禁音
+                    if (peerId !== 'local') {
+                        video.muted = false;
+                        video.volume = 1.0;
+                    }
+                    video.play()
+                        .then(() => {
+                            console.log(`[媒体诊断] [${name || '未知'}] 视频播放已启动`);
+                            // 启动一个延迟检查，看看视频是不是真的有图像了
+                            setTimeout(() => {
+                                if (hasVideo && video.videoWidth === 0) {
+                                    console.error(`[体检报告] [${name || '未知'}] 警告：检测到“黑屏”流！`);
+                                } else if (hasVideo && video.videoWidth > 0) {
+                                    console.log(`[体检报告] [${name || '未知'}] 状态正常: ${video.videoWidth}x${video.videoHeight}`);
+                                    // 暴力二次确认：如果已经有分辨率了，头像必须消失，视频必须显示
+                                    placeholder.style.display = 'none';
+                                    video.style.opacity = '1';
+                                    video.style.visibility = 'visible';
+                                }
+                            }, 3000);
+                        })
+                        .catch(e => console.error(`[媒体诊断] [${name || '未知'}] 会议自动播放失败:`, e.name, e.message));
+                }
+                const hasVideo = stream.getVideoTracks().length > 0;
+                placeholder.style.display = hasVideo ? 'none' : 'flex';
+                // 关键修复：不要用 display: none，否则浏览器会为了省电/省资源直接关掉音轨
+                video.style.opacity = hasVideo ? '1' : '0';
+                video.style.visibility = hasVideo ? 'visible' : 'hidden';
+            } else {
+                placeholder.style.display = 'flex';
+                video.style.opacity = '0';
+                video.style.visibility = 'hidden';
+            }
+        }
+
+        sdk.on('onPeerLeft', (peerId) => {
+            const el = document.getElementById(`video-card-${peerId}`);
+            if (el) el.remove();
+        });
+
+        // --- UI Interactions mapped to SDK ---
+
+        window.handleAccept = async () => {
+            stopRing();
+            const modal = document.getElementById('incoming-modal');
+            modal.classList.remove('active');
+            setTimeout(() => modal.style.display = 'none', 400);
+            showCall(sdk.state.pendingFromName, true);
+            await sdk.acceptCall();
+        };
+
+        window.handleDecline = () => {
+            stopRing();
+            sdk.declineCall();
+            closeIncoming();
+        };
+
+        // Remove separate document.getElementById('hangup-btn').onclick as it's defined directly in the element inline NOW via <button onclick="...">
+
+        document.getElementById('create-room-btn').onclick = () => {
+            const name = document.getElementById('room-name-input').value.trim() || `${sdk.state.myName}的会议`;
+            sdk.createRoom(name);
+            setupMeetingUI(name, '...');
+        };
+
+        window.joinRoom = (roomId, roomName) => {
+            setupMeetingUI(roomName, roomId);
+            sdk.joinRoom(roomId);
+        };
+
+        window.leaveRoom = () => {
+            sdk.leaveRoom();
+            if (meetingTimerInterval) {
+                clearInterval(meetingTimerInterval);
+                meetingTimerInterval = null;
+            }
+            meetingStartTime = null;
+            document.getElementById('meeting-timer').textContent = '00:00';
+
+            const o = document.getElementById('meeting-overlay');
+            o.classList.remove('active');
+            setTimeout(() => {
+                o.style.display = 'none';
+                document.getElementById('meeting-main').innerHTML = '';
+                document.getElementById('meeting-sidebar').innerHTML = '';
+            }, 400);
+        };
+
+        window.toggleMic = () => {
+            const enabled = sdk.toggleMic();
+            if (enabled !== null) {
+                document.querySelectorAll('.mic-btn-ui').forEach(btn => {
+                    btn.classList.toggle('active', enabled);
+                    btn.classList.toggle('off', !enabled);
+                    btn.innerHTML = enabled ? ICONS.micOn : ICONS.micOff;
+                });
+            }
+        };
+
+        window.toggleVideo = () => {
+             const enabled = sdk.toggleVideo();
+             if (enabled !== null) {
+                document.querySelectorAll('.video-btn-ui').forEach(btn => {
+                    btn.classList.toggle('active', enabled);
+                    btn.classList.toggle('off', !enabled);
+                    btn.innerHTML = enabled ? ICONS.videoOn : ICONS.videoOff;
+                });
+            }
+        };
+
+        // --- Utility UI Functions ---
+
+        function setupMeetingUI(name, id) {
+            document.getElementById('meeting-room-name').textContent = name;
+            document.getElementById('meeting-id-label').textContent = `Room ID: ${id}`;
+            const o = document.getElementById('meeting-overlay');
+            o.style.display = 'flex';
+            setTimeout(() => o.classList.add('active'), 10);
+            
+            document.getElementById('meeting-main').innerHTML = '';
+            document.getElementById('meeting-sidebar').innerHTML = '';
+            
+            // 重置计时器，等待 onRoomInfo 同步
+            meetingStartTime = null;
+            document.getElementById('meeting-timer').textContent = '00:00';
+            if (meetingTimerInterval) clearInterval(meetingTimerInterval);
+        }
+
+        function updateTimer() {
+            if (!meetingStartTime) return;
+            const diff = Math.floor((Date.now() - meetingStartTime) / 1000);
+            const m = Math.floor(diff / 60).toString().padStart(2, '0');
+            const s = (diff % 60).toString().padStart(2, '0');
+            document.getElementById('meeting-timer').textContent = `${m}:${s}`;
+        }
+
+        function showCall(n, isConnected = false) {
+            document.getElementById('remote-name-call').textContent = n;
+            document.getElementById('call-status-label').textContent = isConnected ? '正在通话...' : '正在拨号...';
+            const o = document.getElementById('call-overlay');
+            o.style.display = 'flex';
+            setTimeout(() => o.classList.add('active'), 10);
+        }
+
+        function playRingWithInterval() {
+            clearTimeout(ringTimer);
+            const ring = document.getElementById('ring-audio');
+            if (!ring) return;
+            
+            ring.muted = false;
+            ring.volume = 1.0;
+            
+            const attemptPlay = () => {
+                ring.play().catch(e => {
+                    console.warn('[音效] 铃声播放请求已排队...', e.message);
+                    ringTimer = setTimeout(attemptPlay, 1000);
+                });
+            };
+
+            // 核心逻辑：播完一遍后，等待 2 秒再播下一遍
+            ring.onended = () => {
+                console.log('[音效] 铃声播放结束，等待 2 秒后重复...');
+                ringTimer = setTimeout(attemptPlay, 1000); // 这里控制间隔时间 (2000 = 2秒)
+            };
+
+            attemptPlay();
+        }
+
+        function stopRing() {
+            clearTimeout(ringTimer);
+            const ring = document.getElementById('ring-audio');
+            ring.onended = null;
+            ring.pause();
+            ring.currentTime = 0;
+        }
+
+        function closeIncoming() {
+            stopRing();
+            const modal = document.getElementById('incoming-modal');
+            modal.classList.remove('active');
+            setTimeout(() => modal.style.display = 'none', 400);
+        }
+
+        window.switchTab = (t) => {
+            document.querySelectorAll('.tab-page').forEach(p => p.style.display = 'none');
+            document.querySelectorAll('.tab-item').forEach(i => i.classList.remove('active'));
+            document.getElementById(`tab-${t}`).style.display = 'block';
+            document.getElementById(`tab-btn-${t}`).classList.add('active');
+            let headerText = t === 'meeting' ? '会议' : (t === 'me' ? '设置' : '联系人');
+            document.getElementById('header').textContent = headerText;
+            if (t === 'me') updateMe();
+        };
+
+        window.showAlert = (t, m) => {
+            document.getElementById('alert-title').textContent = t;
+            document.getElementById('alert-msg').textContent = m;
+            document.getElementById('ios-alert').classList.add('visible');
+        };
+        window.closeAlert = () => document.getElementById('ios-alert').classList.remove('visible');
+    </script>
+</body>
+</html>
